@@ -3,12 +3,13 @@
 ArterPerBiotop.pyt
 
 Sammanställer vilka arter som förekommer i varje naturvärdesbiotop och hur många
-av dem som är invasiva, skyddade och rödlistade. Resultatet är en tabell med en
-rad per biotop:
+av dem som är invasiva, skyddade, rödlistade eller övriga värdearter (ingen av de
+tre). Resultatet är en tabell med en rad per biotop:
 
   Biotop (Kart-ID) | Artlista | Varav invasiva (lista) | Varav invasiva (antal) |
   Varav skyddade (lista) | Varav skyddade (antal) |
-  Varav rödlistade (lista) | Varav rödlistade (antal)
+  Varav rödlistade (lista) | Varav rödlistade (antal) |
+  Varav övriga värdearter (lista) | Varav övriga värdearter (antal)
 
 Fältnamnen i tabellen är ASCII, rubrikerna ovan ligger som alias. En export till
 Excel använder alias som kolumnrubriker.
@@ -58,12 +59,21 @@ SOURCE_OWN = "Egen inventering"
 SOURCE_OTHER = "Annan källa"
 SOURCE_BOTH = "Båda"
 
-# Kategorier i utdataordning: (nyckel, fältprefix, rubrik)
+# Kategorier i utdataordning: (nyckel, fältprefix, rubrik). "other" är arter utan
+# någon av de tre flaggorna.
+FLAG_KEYS = ("inv", "prot", "red")
 CATEGORIES = [
     ("inv", "Invasiva", "invasiva"),
     ("prot", "Skyddade", "skyddade"),
     ("red", "Rodlistade", "rödlistade"),
+    ("other", "Ovriga", "övriga värdearter"),
 ]
+
+
+def _in_category(a, key):
+    if key == "other":
+        return not any(a[k] for k in FLAG_KEYS)
+    return bool(a[key])
 
 # ArcGIS fälttyp (Field.type) -> AddField field_type.
 FIELD_TYPE_MAP = {
@@ -84,8 +94,8 @@ _SV_SORT = str.maketrans({"å": "{", "ä": "|", "ö": "}", "é": "e", "è": "e",
 
 TOOL_SUMMARY = (
     "Sammanställer vilka arter som förekommer i varje naturvärdesbiotop och hur många av "
-    "dem som är invasiva, skyddade och rödlistade. Ger en tabell med en rad per biotop och "
-    "valfritt en Excel-fil med samma innehåll."
+    "dem som är invasiva, skyddade, rödlistade eller övriga värdearter. Ger en tabell med en "
+    "rad per biotop och valfritt en Excel-fil med samma innehåll."
 )
 
 # Verktygstips per parameter, visas i verktygsdialogen. Se _write_tool_metadata.
@@ -114,8 +124,9 @@ TOOLTIPS = {
     ),
     "out_table": (
         "Tabell i en fil-geodatabas med en rad per biotop: artlista samt lista och antal för "
-        "invasiva, skyddade och rödlistade arter. En art som är både skyddad och rödlistad står "
-        "i båda kolumnerna. Listorna sorteras i svensk bokstavsordning.\n"
+        "invasiva, skyddade och rödlistade arter och för övriga värdearter, det vill säga arter "
+        "som inte är något av de tre. En art som är både skyddad och rödlistad står i båda "
+        "kolumnerna. Listorna sorteras i svensk bokstavsordning.\n"
         "Finns tabellen redan skrivs den över om överskrivning är tillåten i Pro."
     ),
     "out_excel": (
@@ -622,7 +633,7 @@ def _run(in_points, in_biotopes, id_field, name_field, out_table, out_excel=None
                       for n, a in species]
             row = [bid, SEPARATOR.join(lbl for lbl, _ in labels) or None]
             for key, _, _ in CATEGORIES:
-                chosen = [lbl for lbl, a in labels if a[key]]
+                chosen = [lbl for lbl, a in labels if _in_category(a, key)]
                 row += [SEPARATOR.join(chosen) or None, len(chosen)]
             rows.append(row)
         n_species = len({n for _, n in agg})
@@ -630,9 +641,10 @@ def _run(in_points, in_biotopes, id_field, name_field, out_table, out_excel=None
             n_species, len(by_bio), len(bio_ids) - len(by_bio),
             "" if include_empty else " utelämnas"))
         for key, prefix, word in CATEGORIES:
-            if not flag_fields[key]:
+            if key != "other" and not flag_fields[key]:
                 messages.addWarningMessage(
-                    "Inget fält angivet för {}: kolumnerna blir tomma.".format(word))
+                    "Inget fält angivet för {}: kolumnerna blir tomma och arterna räknas "
+                    "som övriga värdearter.".format(word))
 
         # ── 4 Skriv tabeller
         steps.start("Skriver utdatatabell")
@@ -656,6 +668,7 @@ def _run(in_points, in_biotopes, id_field, name_field, out_table, out_excel=None
                          ("Invasiv", "SHORT", "Invasiv", None),
                          ("Skyddad", "SHORT", "Skyddad", None),
                          ("Rodlistad", "SHORT", "Rödlistad", None),
+                         ("Ovrig", "SHORT", "Övrig värdeart", None),
                          ("Antal_fynd", "LONG", "Antal fynd", None)]
             if source_field:
                 long_spec += [("Antal_egna", "LONG", "Antal egna fynd", None),
@@ -665,7 +678,8 @@ def _run(in_points, in_biotopes, id_field, name_field, out_table, out_excel=None
             with arcpy.da.InsertCursor(out_long_table, [s[0] for s in long_spec]) as cur:
                 for bid in bio_ids:
                     for name, a in sorted(by_bio.get(bid, []), key=lambda s: _sort_key(s[0])):
-                        row = [bid, name, a["inv"], a["prot"], a["red"], a["n"]]
+                        row = [bid, name, a["inv"], a["prot"], a["red"],
+                               int(_in_category(a, "other")), a["n"]]
                         if source_field:
                             src = SOURCE_OTHER if a["own"] == 0 else (
                                 SOURCE_OWN if a["own"] == a["n"] else SOURCE_BOTH)
