@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyt.xml
+*.lock
+*.aprx.bak
+*.gdb/
+*.xlsx
