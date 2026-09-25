@@ -38,6 +38,7 @@ Krav: ArcGIS Pro 3.x (arcpy). Inga paket utöver Pythons standardbibliotek.
 import os
 import re
 import time
+import uuid
 from xml.sax.saxutils import escape
 
 import arcpy
@@ -538,7 +539,10 @@ def _run(in_points, in_biotopes, id_field, name_field, out_table, out_excel=None
          include_empty=True, messages=None):
     own_key = (own_value or "").strip().casefold()
     steps = _Steps(4 + bool(out_excel), messages)
-    join_fc = r"memory\arter_per_biotop_join"
+    # Unikt namn: då behövs ingen koll av om datasetet redan finns. memory-arbetsytan
+    # delas av allt som körs i Pro-sessionen, och Delete/Exists där har fallerat med
+    # "Invalid SQL syntax [GDB_Items]" på grund av andra dataset i den.
+    join_fc = r"memory\apb_join_" + uuid.uuid4().hex[:12]
     flag_fields = {"red": red_field, "prot": prot_field, "inv": inv_field}
 
     pfields = _field_map(in_points)
@@ -553,8 +557,6 @@ def _run(in_points, in_biotopes, id_field, name_field, out_table, out_excel=None
     try:
         # ── 1 Punkt i polygon
         steps.start("Kopplar artpunkter till biotoper (Spatial Join)")
-        if arcpy.Exists(join_fc):
-            arcpy.management.Delete(join_fc)
         arcpy.analysis.SpatialJoin(
             in_points, in_biotopes, join_fc, "JOIN_ONE_TO_MANY", "KEEP_COMMON",
             match_option="INTERSECT", search_radius=search_distance or None)
@@ -710,5 +712,10 @@ def _run(in_points, in_biotopes, id_field, name_field, out_table, out_excel=None
                 "egen inventering.".format(ADB_MARK.strip()))
     finally:
         arcpy.ResetProgressor()
-        if arcpy.Exists(join_fc):
+        # Städningen får aldrig fälla en körning vars resultat redan är skrivet.
+        try:
             arcpy.management.Delete(join_fc)
+        except Exception:
+            messages.addMessage(
+                "Kunde inte ta bort det tillfälliga datasetet {}. Det försvinner när Pro "
+                "stängs och påverkar inte resultatet.".format(join_fc))
