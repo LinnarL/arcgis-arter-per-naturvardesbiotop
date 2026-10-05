@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-ArterPerBiotop.pyt
+ArterPerNaturvardesbiotop.pyt
 
 Sammanställer vilka arter som förekommer i varje naturvärdesbiotop och hur många
 av dem som är invasiva, skyddade, rödlistade eller övriga värdearter (ingen av de
@@ -370,8 +370,8 @@ def _write_tool_metadata(tool_cls, toolbox_alias):
 
 class Toolbox:
     def __init__(self):
-        self.label = "Arter per biotop"
-        self.alias = "arter_per_biotop"
+        self.label = "Arter per naturvärdesbiotop"
+        self.alias = "arter_per_naturvardesbiotop"
         self.tools = [ArterPerBiotop]
         _write_tool_metadata(ArterPerBiotop, self.alias)
 

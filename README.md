@@ -1,4 +1,4 @@
-# Arter per biotop
+# Arter per naturvärdesbiotop
 
 ArcGIS Pro-verktyg som sammanställer vilka arter som förekommer i varje naturvärdesbiotop
 och hur många av dem som är invasiva, skyddade, rödlistade eller övriga värdearter. Resultatet
@@ -15,7 +15,7 @@ ArcGIS Pro 3.x, Basic-licens räcker. Inga paket utöver det som följer med Pro
 
 ## Lägg till i ArcGIS Pro
 
-Catalog-fönstret, högerklicka Toolboxes, Add Toolbox, välj `ArterPerBiotop.pyt`.
+Catalog-fönstret, högerklicka Toolboxes, Add Toolbox, välj `ArterPerNaturvardesbiotop.pyt`.
 
 ## Indata
 
