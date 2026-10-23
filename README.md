@@ -51,3 +51,7 @@ Urval och definitionsfrågor på båda lagren respekteras.
   per biotop även om biotopen består av flera polygoner.
 - En art som är både skyddad och rödlistad står i båda kolumnerna.
 - Listorna sorteras i svensk bokstavsordning och biotoperna numeriskt när ID:t är ett tal.
+- Ligger utdatatabellerna på en nätverksresurs byggs de först lokalt, i `scratchGDB` eller i en
+  temporär geodatabas, och kopieras dit i ett steg. På en filserver kostar varje schemaändring
+  i en geodatabas lika lång tid oavsett storlek: tabellerna tog 3,5 minuter att skriva direkt
+  på servern och tar nu ungefär en halv minut.

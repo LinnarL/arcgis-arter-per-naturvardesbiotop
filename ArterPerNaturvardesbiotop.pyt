@@ -37,6 +37,8 @@ Krav: ArcGIS Pro 3.x (arcpy). Inga paket utöver Pythons standardbibliotek.
 
 import os
 import re
+import shutil
+import tempfile
 import time
 import uuid
 from xml.sax.saxutils import escape
@@ -238,25 +240,60 @@ def _in_gdb(path):
     return False
 
 
+def _check_overwrite(path):
+    if arcpy.Exists(path) and not arcpy.env.overwriteOutput:
+        raise ValueError(
+            "Utdatatabellen {} finns redan. Tillåt överskrivning i Pro eller välj ett "
+            "annat namn.".format(path)
+        )
+
+
 def _create_table(path, fields):
     """
     Skapa en tabell i en geodatabas. fields är en lista av
-    (namn, AddField-typ, alias, längd eller None).
+    (namn, AddField-typ, alias, längd eller None). Alla fält i ett anrop:
+    AddField per fält är en schemaändring var, och på en filserver kostar
+    var och en 16-18 s.
     """
     if arcpy.Exists(path):
-        if not arcpy.env.overwriteOutput:
-            raise ValueError(
-                "Utdatatabellen {} finns redan. Tillåt överskrivning i Pro eller välj ett "
-                "annat namn.".format(path)
-            )
         arcpy.management.Delete(path)
     ws, name = os.path.split(path)
     arcpy.management.CreateTable(ws, name)
-    for fname, ftype, alias, length in fields:
-        arcpy.management.AddField(
-            path, fname, ftype, field_alias=alias,
-            field_length=length if ftype == "TEXT" else None,
-        )
+    arcpy.management.AddFields(path, [
+        [fname, ftype, alias, length if ftype == "TEXT" else ""]
+        for fname, ftype, alias, length in fields
+    ])
+
+
+def _is_network_path(path):
+    """Sant om sökvägen ligger på en nätverksresurs (UNC eller mappad nätverksenhet)."""
+    norm = (path or "").replace("/", "\\")
+    if norm.startswith("\\\\"):
+        return True
+    drive = os.path.splitdrive(norm)[0]
+    if len(drive) == 2 and drive[1] == ":":
+        try:
+            import ctypes
+            return ctypes.windll.kernel32.GetDriveTypeW(drive + "\\") == 4   # DRIVE_REMOTE
+        except Exception:
+            return False
+    return False
+
+
+def _local_scratch_gdb():
+    """Lokal geodatabas att bygga utdata i, och en mapp att ta bort efteråt (eller None).
+
+    arcpy.env.scratchGDB följer miljön Scratch Workspace. Pekar den på en
+    nätverksresurs, eller saknas den, skapas en egen geodatabas i temp."""
+    try:
+        gdb = arcpy.env.scratchGDB
+    except Exception:
+        gdb = None
+    if gdb and not _is_network_path(gdb) and arcpy.Exists(gdb):
+        return gdb, None
+    folder = tempfile.mkdtemp(prefix="apb_")
+    arcpy.management.CreateFileGDB(folder, "scratch.gdb")
+    return os.path.join(folder, "scratch.gdb"), folder
 
 
 def _id_field_spec(field, alias):
@@ -538,7 +575,12 @@ def _run(in_points, in_biotopes, id_field, name_field, out_table, out_excel=None
          own_value=DEFAULT_OWN_VALUE, out_long_table=None, search_distance=None,
          include_empty=True, messages=None):
     own_key = (own_value or "").strip().casefold()
-    steps = _Steps(4 + bool(out_excel), messages)
+    # Tabeller på en nätverksresurs byggs lokalt och kopieras dit i ett steg.
+    remote = [p for p in (out_table, out_long_table)
+              if p and _is_network_path(os.path.dirname(p))]
+    staged = {}            # utdatatabell -> lokal tabell den byggs i
+    scratch_folder = None
+    steps = _Steps(4 + bool(remote) + bool(out_excel), messages)
     # Unikt namn: då behövs ingen koll av om datasetet redan finns. memory-arbetsytan
     # delas av allt som körs i Pro-sessionen, och Delete/Exists där har fallerat med
     # "Invalid SQL syntax [GDB_Items]" på grund av andra dataset i den.
@@ -658,8 +700,19 @@ def _run(in_points, in_biotopes, id_field, name_field, out_table, out_excel=None
             spec += [(prefix + "_lista", "TEXT", "Varav {} (lista)".format(word),
                       _text_length(cols[2 + 2 * i])),
                      (prefix + "_antal", "LONG", "Varav {} (antal)".format(word), None)]
-        _create_table(out_table, spec)
-        with arcpy.da.InsertCursor(out_table, [s[0] for s in spec]) as cur:
+        for path in (out_table, out_long_table):
+            if path:
+                _check_overwrite(path)
+        if remote:
+            gdb, scratch_folder = _local_scratch_gdb()
+            for path in remote:
+                staged[path] = os.path.join(gdb, "apb_" + uuid.uuid4().hex[:12])
+            messages.addMessage(
+                "    Utdata ligger på en nätverksresurs. Tabellerna byggs lokalt i {} och "
+                "kopieras dit i ett steg.".format(gdb))
+        main_table = staged.get(out_table, out_table)
+        _create_table(main_table, spec)
+        with arcpy.da.InsertCursor(main_table, [s[0] for s in spec]) as cur:
             for row in rows:
                 cur.insertRow(row)
         messages.addMessage("    {} rader i {}".format(len(rows), out_table))
@@ -675,9 +728,10 @@ def _run(in_points, in_biotopes, id_field, name_field, out_table, out_excel=None
             if source_field:
                 long_spec += [("Antal_egna", "LONG", "Antal egna fynd", None),
                               ("Kalla", "TEXT", "Källa", 30)]
-            _create_table(out_long_table, long_spec)
+            long_table = staged.get(out_long_table, out_long_table)
+            _create_table(long_table, long_spec)
             n_long = 0
-            with arcpy.da.InsertCursor(out_long_table, [s[0] for s in long_spec]) as cur:
+            with arcpy.da.InsertCursor(long_table, [s[0] for s in long_spec]) as cur:
                 for bid in bio_ids:
                     for name, a in sorted(by_bio.get(bid, []), key=lambda s: _sort_key(s[0])):
                         row = [bid, name, a["inv"], a["prot"], a["red"],
@@ -691,14 +745,25 @@ def _run(in_points, in_biotopes, id_field, name_field, out_table, out_excel=None
             messages.addMessage("    {} rader i {}".format(n_long, out_long_table))
         steps.done()
 
-        # ── 5 Excel
+        # ── 5 Kopiera till nätverksresursen
+        if staged:
+            steps.start("Kopierar {} till nätverksresursen".format(
+                "tabellen" if len(staged) == 1 else "tabellerna"))
+            for path, local in staged.items():
+                if arcpy.Exists(path):
+                    arcpy.management.Delete(path)
+                arcpy.conversion.ExportTable(local, path)
+                messages.addMessage("    {}".format(path))
+            steps.done()
+
+        # ── 6 Excel, från den lokala tabellen när en sådan finns
         if out_excel:
             steps.start("Exporterar till Excel")
             try:
                 if os.path.exists(out_excel):
                     os.remove(out_excel)
-                arcpy.conversion.TableToExcel(out_table, out_excel, "ALIAS")
-                _drop_oid_column(out_excel, arcpy.Describe(out_table).OIDFieldName)
+                arcpy.conversion.TableToExcel(main_table, out_excel, "ALIAS")
+                _drop_oid_column(out_excel, arcpy.Describe(main_table).OIDFieldName)
                 steps.done(out_excel)
             except (OSError, arcpy.ExecuteError) as exc:
                 messages.addWarningMessage(
@@ -719,3 +784,16 @@ def _run(in_points, in_biotopes, id_field, name_field, out_table, out_excel=None
             messages.addMessage(
                 "Kunde inte ta bort det tillfälliga datasetet {}. Det försvinner när Pro "
                 "stängs och påverkar inte resultatet.".format(join_fc))
+        for local in staged.values():
+            try:
+                arcpy.management.Delete(local)
+            except Exception:
+                pass
+        if scratch_folder:
+            # Egen temp-geodatabas: tas bort genom arcpy, som håller den öppen, annars
+            # lämnar rmtree en tom .gdb-mapp efter sig.
+            try:
+                arcpy.management.Delete(os.path.join(scratch_folder, "scratch.gdb"))
+            except Exception:
+                pass
+            shutil.rmtree(scratch_folder, ignore_errors=True)
